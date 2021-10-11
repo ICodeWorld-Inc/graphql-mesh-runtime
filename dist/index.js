@@ -13,7 +13,7 @@ const batchDelegate = require('@graphql-tools/batch-delegate');
 const wrap = require('@graphql-tools/wrap');
 const utils$1 = require('@graphql-tools/utils');
 
-function applyResolversHooksToResolvers(resolvers, pubsub) {
+function applyResolversHooksToResolvers(resolvers, pubsub, meshContext) {
     return resolversComposition.composeResolvers(resolvers, {
         '*.*': (originalResolver) => async (...resolverArgs) => {
             let resolverData;
@@ -41,10 +41,11 @@ function applyResolversHooksToResolvers(resolvers, pubsub) {
                 throw new Error('Unexpected resolver params given');
             }
             pubsub.publish('resolverCalled', { resolverData });
+            const finalContext = Object.assign(resolverData.context, meshContext);
             try {
                 const result = await (isArgsInResolversArgs
-                    ? originalResolver(resolverData.root, resolverData.args, resolverData.context, resolverData.info)
-                    : originalResolver(resolverData.root, resolverData.context, resolverData.info));
+                    ? originalResolver(resolverData.root, resolverData.args, finalContext, resolverData.info)
+                    : originalResolver(resolverData.root, finalContext, resolverData.info));
                 pubsub.publish('resolverDone', { resolverData, result });
                 return result;
             }
@@ -55,11 +56,11 @@ function applyResolversHooksToResolvers(resolvers, pubsub) {
         },
     });
 }
-function applyResolversHooksToSchema(schema$1, pubsub) {
+function applyResolversHooksToSchema(schema$1, pubsub, meshContext) {
     const sourceResolvers = utils.extractResolvers(schema$1);
     return schema.addResolversToSchema({
         schema: schema$1,
-        resolvers: applyResolversHooksToResolvers(sourceResolvers, pubsub),
+        resolvers: applyResolversHooksToResolvers(sourceResolvers, pubsub, meshContext),
         updateResolversInPlace: true,
     });
 }
@@ -71,34 +72,53 @@ const MESH_API_CONTEXT_SYMBOL = Symbol('isMeshAPIContext');
 async function getMesh(options) {
     var _a;
     const rawSources = [];
+    const customContextBuilders = [];
+    const addCustomContextBuilder = (contextBuilder) => {
+        customContextBuilders.push(contextBuilder);
+    };
+    const mergeContext = async (context) => {
+        const allCustomContexts = await Promise.all(customContextBuilders.map(builder => {
+            return builder();
+        }));
+        return Object.assign(context, ...allCustomContexts);
+    };
     const { pubsub, cache, logger = new utils.DefaultLogger('🕸️') } = options;
     const getMeshLogger = logger.child('GetMesh');
     getMeshLogger.debug(`Getting subschemas from source handlers`);
-    await Promise.all(options.sources.map(async (apiSource) => {
+    let failed = false;
+    await Promise.allSettled(options.sources.map(async (apiSource) => {
         const apiName = apiSource.name;
         const sourceLogger = logger.child(apiName);
         sourceLogger.debug(`Generating the schema`);
-        const source = await apiSource.handler.getMeshSource();
-        sourceLogger.debug(`The schema has been generated successfully`);
-        let apiSchema = source.schema;
-        sourceLogger.debug(`Analyzing transforms`);
-        const { wrapTransforms, noWrapTransforms } = utils.groupTransforms(apiSource.transforms);
-        if (noWrapTransforms === null || noWrapTransforms === void 0 ? void 0 : noWrapTransforms.length) {
-            sourceLogger.debug(`${noWrapTransforms.length} bare transforms found and applying`);
-            apiSchema = utils.applySchemaTransforms(apiSchema, source, null, noWrapTransforms);
+        try {
+            const source = await apiSource.handler.getMeshSource();
+            sourceLogger.debug(`The schema has been generated successfully`);
+            let apiSchema = source.schema;
+            sourceLogger.debug(`Analyzing transforms`);
+            const { wrapTransforms, noWrapTransforms } = utils.groupTransforms(apiSource.transforms);
+            if (noWrapTransforms === null || noWrapTransforms === void 0 ? void 0 : noWrapTransforms.length) {
+                sourceLogger.debug(`${noWrapTransforms.length} bare transforms found and applying`);
+                apiSchema = utils.applySchemaTransforms(apiSchema, source, null, noWrapTransforms);
+            }
+            rawSources.push({
+                name: apiName,
+                schema: apiSchema,
+                executor: source.executor,
+                transforms: wrapTransforms,
+                contextVariables: source.contextVariables || [],
+                handler: apiSource.handler,
+                batch: 'batch' in source ? source.batch : true,
+                merge: apiSource.merge,
+            });
         }
-        rawSources.push({
-            name: apiName,
-            contextBuilder: source.contextBuilder || null,
-            schema: apiSchema,
-            executor: source.executor,
-            transforms: wrapTransforms,
-            contextVariables: source.contextVariables || [],
-            handler: apiSource.handler,
-            batch: 'batch' in source ? source.batch : true,
-            merge: apiSource.merge,
-        });
+        catch (e) {
+            sourceLogger.error(`Failed to generate schema: ${e.message || e}`);
+            failed = true;
+        }
     }));
+    if (failed) {
+        throw new Error(`Schemas couldn't be generated successfully. Check for the logs by running Mesh with DEBUG=1 environmental variable to get more verbose output.`);
+    }
     getMeshLogger.debug(`Schemas have been generated by the source handlers`);
     getMeshLogger.debug(`Merging schemas using the defined merging strategy.`);
     let unifiedSchema = await options.merger.getUnifiedSchema({
@@ -107,10 +127,6 @@ async function getMesh(options) {
         resolvers: options.additionalResolvers,
         transforms: options.transforms,
     });
-    getMeshLogger.debug(`Attaching resolver hooks to the unified schema`);
-    unifiedSchema = applyResolversHooksToSchema(unifiedSchema, pubsub);
-    getMeshLogger.debug(`Creating JIT Executor`);
-    const jitExecutor = utils.jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     getMeshLogger.debug(`Creating Live Query Store`);
     const liveQueryStore = new inMemoryLiveQueryStore.InMemoryLiveQueryStore({
         includeIdentifierExtension: true,
@@ -149,8 +165,8 @@ async function getMesh(options) {
             }
         }
     });
-    getMeshLogger.debug(`Building Base Mesh Context`);
-    const baseMeshContext = {
+    getMeshLogger.debug(`Building Mesh Context`);
+    const meshContext = {
         pubsub,
         cache,
         liveQueryStore,
@@ -230,40 +246,27 @@ async function getMesh(options) {
                 }
             }
         }
-        baseMeshContext[rawSource.name] = rawSourceContext;
+        meshContext[rawSource.name] = rawSourceContext;
     }));
-    async function buildMeshContext(additionalContext = {}) {
-        if (MESH_CONTEXT_SYMBOL in additionalContext) {
-            return additionalContext;
-        }
-        const context = Object.assign(additionalContext, baseMeshContext);
-        await Promise.all(rawSources.map(async (rawSource) => {
-            const rawSourceLogger = logger.child(`${rawSource.name}`);
-            const contextBuilder = rawSource.contextBuilder;
-            if (contextBuilder) {
-                rawSourceLogger.debug(`Building context`);
-                const sourceContext = await contextBuilder(context);
-                if (sourceContext) {
-                    Object.assign(context, sourceContext);
-                }
-                rawSourceLogger.debug(`Context has been built successfully`);
-            }
-        }));
-        return context;
-    }
+    getMeshLogger.debug(`Attaching resolver hooks to the unified schema`);
+    unifiedSchema = applyResolversHooksToSchema(unifiedSchema, pubsub, meshContext);
+    getMeshLogger.debug(`Creating JIT Executor`);
+    const jitExecutor = utils.jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     const executionLogger = logger.child(`Execute`);
-    async function meshExecute(document, variableValues, context, rootValue, operationName) {
+    const EMPTY_ROOT_VALUE = {};
+    const EMPTY_CONTEXT_VALUE = {};
+    const EMPTY_VARIABLES_VALUE = {};
+    async function meshExecute(documentOrSDL, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const printedDocument = typeof document === 'string' ? document : graphql.print(document);
-        const documentNode = utils.ensureDocumentNode(document);
+        const { document, sdl } = utils.getDocumentNodeAndSDL(documentOrSDL);
         if (!operationName) {
-            const operationAst = graphql.getOperationAST(documentNode);
+            const operationAst = graphql.getOperationAST(document);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = executionLogger.child(operationName || 'UnnamedOperation');
-        const contextValue = await buildMeshContext(context);
+        contextValue = await mergeContext(contextValue);
         const executionParams = {
-            document: documentNode,
+            document,
             contextValue,
             rootValue,
             variableValues,
@@ -272,51 +275,41 @@ async function getMesh(options) {
         };
         operationLogger.debug(`Execution started with
 ${utils$1.inspect({
-            ...(operationName ? {} : { query: printedDocument }),
+            ...(operationName ? {} : { query: sdl }),
             ...(rootValue ? { rootValue } : {}),
             ...(variableValues ? { variableValues } : {}),
         })}`);
         const executionResult = await liveQueryStore.execute(executionParams);
-        pubsub.publish('executionDone', {
-            ...executionParams,
-            executionResult: executionResult,
-        });
         operationLogger.debug(`Execution done with
 ${utils$1.inspect({
-            ...(operationName ? {} : { query: printedDocument }),
+            ...(operationName ? {} : { query: sdl }),
             ...executionResult,
         })}`);
         return executionResult;
     }
     const subscriberLogger = logger.child(`meshSubscribe`);
-    async function meshSubscribe(document, variableValues, context, rootValue, operationName) {
+    async function meshSubscribe(documentOrSDL, variables = EMPTY_VARIABLES_VALUE, context = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const printedDocument = typeof document === 'string' ? document : graphql.print(document);
-        const documentNode = utils.ensureDocumentNode(document);
+        const { document, sdl } = utils.getDocumentNodeAndSDL(documentOrSDL);
         if (!operationName) {
-            const operationAst = graphql.getOperationAST(documentNode);
+            const operationAst = graphql.getOperationAST(document);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = subscriberLogger.child(operationName || 'UnnamedOperation');
-        const contextValue = await buildMeshContext(context);
-        const executionParams = {
-            document: documentNode,
-            contextValue,
-            rootValue,
-            variableValues,
-            schema: unifiedSchema,
-            operationName,
-        };
         operationLogger.debug(`Subscription started with
 ${utils$1.inspect({
             ...(rootValue ? {} : { rootValue }),
-            ...(variableValues ? {} : { variableValues }),
-            ...(operationName ? {} : { query: printedDocument }),
+            ...(variables ? {} : { variables }),
+            ...(operationName ? {} : { query: sdl }),
         })}`);
-        const executionResult = await graphql.subscribe(executionParams);
-        pubsub.publish('executionDone', {
-            ...executionParams,
-            executionResult: executionResult,
+        context = await mergeContext(context);
+        const executionResult = await jitExecutor({
+            document,
+            context,
+            rootValue,
+            variables,
+            operationName,
+            operationType: 'subscription',
         });
         return executionResult;
     }
@@ -338,7 +331,7 @@ ${utils$1.inspect({
             else {
                 logger.error(`GraphQL Mesh SDK failed to execute:
         ${utils$1.inspect({
-                    query: graphql.print(document),
+                    query: utils.printWithCache(document),
                     variables,
                 })}`);
                 throw new GraphQLMeshSdkError(executionResult.errors, document, variables, executionResult.data);
@@ -352,13 +345,14 @@ ${utils$1.inspect({
         execute: meshExecute,
         subscribe: meshSubscribe,
         schema: unifiedSchema,
-        contextBuilder: buildMeshContext,
         rawSources,
         sdkRequester: localRequester,
         cache,
         pubsub,
         destroy: () => pubsub.publish('destroy', undefined),
         liveQueryStore,
+        contextBuilder: async (ctx) => ctx || {},
+        addCustomContextBuilder,
     };
 }
 function normalizeSelectionSetParam(selectionSetParam) {

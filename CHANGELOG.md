@@ -1,5 +1,43 @@
 # @graphql-mesh/runtime
 
+## 0.22.0
+
+### Minor Changes
+
+- 256abf5f7: enhance: do not use context of orchestrator but internally
+
+### Patch Changes
+
+- Updated dependencies [256abf5f7]
+  - @graphql-mesh/types@0.51.0
+  - @graphql-mesh/utils@0.17.2
+
+## 0.21.2
+
+### Patch Changes
+
+- Updated dependencies [8c9b709ae]
+  - @graphql-mesh/types@0.50.0
+  - @graphql-mesh/utils@0.17.1
+
+## 0.21.1
+
+### Patch Changes
+
+- Updated dependencies [7bd145769]
+  - @graphql-mesh/utils@0.17.0
+
+## 0.21.0
+
+### Minor Changes
+
+- 4263ed47e: feat(runtime): list errors from all sources
+
+### Patch Changes
+
+- Updated dependencies [472c5887b]
+  - @graphql-mesh/utils@0.16.3
+
 ## 0.20.2
 
 ### Patch Changes

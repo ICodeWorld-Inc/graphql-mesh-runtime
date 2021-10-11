@@ -8,10 +8,20 @@ export interface MeshInstance {
     schema: GraphQLSchema;
     rawSources: RawSourceOutput[];
     sdkRequester: Requester;
-    contextBuilder: (initialContextValue?: any) => Promise<Record<string, any>>;
     destroy: () => void;
     pubsub: MeshPubSub;
     cache: KeyValueCache;
     liveQueryStore: InMemoryLiveQueryStore;
+    /**
+     * @deprecated
+     * contextBuilder has no effect in the provided context anymore.
+     * It will be removed in the next version
+     */
+    contextBuilder: (ctx: any) => Promise<any>;
+    addCustomContextBuilder: (builder: CustomContextBuilders) => void;
 }
+declare type CustomContextBuilders = () => Promise<{
+    [key: string]: any;
+}>;
 export declare function getMesh(options: GetMeshOptions): Promise<MeshInstance>;
+export {};
