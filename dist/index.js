@@ -41,7 +41,7 @@ function applyResolversHooksToResolvers(resolvers, pubsub, meshContext) {
                 throw new Error('Unexpected resolver params given');
             }
             pubsub.publish('resolverCalled', { resolverData });
-            const finalContext = Object.assign(resolverData.context, meshContext);
+            const finalContext = Object.assign(resolverData.context || {}, meshContext);
             try {
                 const result = await (isArgsInResolversArgs
                     ? originalResolver(resolverData.root, resolverData.args, finalContext, resolverData.info)
@@ -127,6 +127,8 @@ async function getMesh(options) {
         resolvers: options.additionalResolvers,
         transforms: options.transforms,
     });
+    getMeshLogger.debug(`Creating JIT Executor`);
+    const jitExecutor = utils.jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     getMeshLogger.debug(`Creating Live Query Store`);
     const liveQueryStore = new inMemoryLiveQueryStore.InMemoryLiveQueryStore({
         includeIdentifierExtension: true,
@@ -250,23 +252,22 @@ async function getMesh(options) {
     }));
     getMeshLogger.debug(`Attaching resolver hooks to the unified schema`);
     unifiedSchema = applyResolversHooksToSchema(unifiedSchema, pubsub, meshContext);
-    getMeshLogger.debug(`Creating JIT Executor`);
-    const jitExecutor = utils.jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     const executionLogger = logger.child(`Execute`);
     const EMPTY_ROOT_VALUE = {};
     const EMPTY_CONTEXT_VALUE = {};
     const EMPTY_VARIABLES_VALUE = {};
-    async function meshExecute(documentOrSDL, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
+    async function meshExecute(document, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const { document, sdl } = utils.getDocumentNodeAndSDL(documentOrSDL);
+        const printedDocument = typeof document === 'string' ? document : graphql.print(document);
+        const documentNode = utils.ensureDocumentNode(document);
         if (!operationName) {
-            const operationAst = graphql.getOperationAST(document);
+            const operationAst = graphql.getOperationAST(documentNode);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = executionLogger.child(operationName || 'UnnamedOperation');
         contextValue = await mergeContext(contextValue);
         const executionParams = {
-            document,
+            document: documentNode,
             contextValue,
             rootValue,
             variableValues,
@@ -275,42 +276,44 @@ async function getMesh(options) {
         };
         operationLogger.debug(`Execution started with
 ${utils$1.inspect({
-            ...(operationName ? {} : { query: sdl }),
+            ...(operationName ? {} : { query: printedDocument }),
             ...(rootValue ? { rootValue } : {}),
             ...(variableValues ? { variableValues } : {}),
         })}`);
         const executionResult = await liveQueryStore.execute(executionParams);
         operationLogger.debug(`Execution done with
 ${utils$1.inspect({
-            ...(operationName ? {} : { query: sdl }),
+            ...(operationName ? {} : { query: printedDocument }),
             ...executionResult,
         })}`);
         return executionResult;
     }
     const subscriberLogger = logger.child(`meshSubscribe`);
-    async function meshSubscribe(documentOrSDL, variables = EMPTY_VARIABLES_VALUE, context = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
+    async function meshSubscribe(document, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const { document, sdl } = utils.getDocumentNodeAndSDL(documentOrSDL);
+        const printedDocument = typeof document === 'string' ? document : graphql.print(document);
+        const documentNode = utils.ensureDocumentNode(document);
         if (!operationName) {
-            const operationAst = graphql.getOperationAST(document);
+            const operationAst = graphql.getOperationAST(documentNode);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = subscriberLogger.child(operationName || 'UnnamedOperation');
+        contextValue = await mergeContext(contextValue);
+        const executionParams = {
+            document: documentNode,
+            contextValue,
+            rootValue,
+            variableValues,
+            schema: unifiedSchema,
+            operationName,
+        };
         operationLogger.debug(`Subscription started with
 ${utils$1.inspect({
             ...(rootValue ? {} : { rootValue }),
-            ...(variables ? {} : { variables }),
-            ...(operationName ? {} : { query: sdl }),
+            ...(variableValues ? {} : { variableValues }),
+            ...(operationName ? {} : { query: printedDocument }),
         })}`);
-        context = await mergeContext(context);
-        const executionResult = await jitExecutor({
-            document,
-            context,
-            rootValue,
-            variables,
-            operationName,
-            operationType: 'subscription',
-        });
+        const executionResult = await graphql.subscribe(executionParams);
         return executionResult;
     }
     class GraphQLMeshSdkError extends utils.AggregateError {
@@ -331,7 +334,7 @@ ${utils$1.inspect({
             else {
                 logger.error(`GraphQL Mesh SDK failed to execute:
         ${utils$1.inspect({
-                    query: utils.printWithCache(document),
+                    query: graphql.print(document),
                     variables,
                 })}`);
                 throw new GraphQLMeshSdkError(executionResult.errors, document, variables, executionResult.data);

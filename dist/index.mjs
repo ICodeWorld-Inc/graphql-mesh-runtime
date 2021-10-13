@@ -1,7 +1,7 @@
-import { getOperationAST, print } from 'graphql';
+import { getOperationAST, print, subscribe } from 'graphql';
 import { composeResolvers } from '@graphql-tools/resolvers-composition';
 import { addResolversToSchema } from '@graphql-tools/schema';
-import { extractResolvers, DefaultLogger, groupTransforms, applySchemaTransforms, getInterpolatedStringFactory, jitExecutorFactory, getDocumentNodeAndSDL, printWithCache, AggregateError } from '@graphql-mesh/utils';
+import { extractResolvers, DefaultLogger, groupTransforms, applySchemaTransforms, jitExecutorFactory, getInterpolatedStringFactory, ensureDocumentNode, AggregateError } from '@graphql-mesh/utils';
 import { env } from 'process';
 import { InMemoryLiveQueryStore } from '@n1ru4l/in-memory-live-query-store';
 import { delegateToSchema } from '@graphql-tools/delegate';
@@ -37,7 +37,7 @@ function applyResolversHooksToResolvers(resolvers, pubsub, meshContext) {
                 throw new Error('Unexpected resolver params given');
             }
             pubsub.publish('resolverCalled', { resolverData });
-            const finalContext = Object.assign(resolverData.context, meshContext);
+            const finalContext = Object.assign(resolverData.context || {}, meshContext);
             try {
                 const result = await (isArgsInResolversArgs
                     ? originalResolver(resolverData.root, resolverData.args, finalContext, resolverData.info)
@@ -123,6 +123,8 @@ async function getMesh(options) {
         resolvers: options.additionalResolvers,
         transforms: options.transforms,
     });
+    getMeshLogger.debug(`Creating JIT Executor`);
+    const jitExecutor = jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     getMeshLogger.debug(`Creating Live Query Store`);
     const liveQueryStore = new InMemoryLiveQueryStore({
         includeIdentifierExtension: true,
@@ -246,23 +248,22 @@ async function getMesh(options) {
     }));
     getMeshLogger.debug(`Attaching resolver hooks to the unified schema`);
     unifiedSchema = applyResolversHooksToSchema(unifiedSchema, pubsub, meshContext);
-    getMeshLogger.debug(`Creating JIT Executor`);
-    const jitExecutor = jitExecutorFactory(unifiedSchema, 'unified', logger.child('JIT Executor'));
     const executionLogger = logger.child(`Execute`);
     const EMPTY_ROOT_VALUE = {};
     const EMPTY_CONTEXT_VALUE = {};
     const EMPTY_VARIABLES_VALUE = {};
-    async function meshExecute(documentOrSDL, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
+    async function meshExecute(document, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const { document, sdl } = getDocumentNodeAndSDL(documentOrSDL);
+        const printedDocument = typeof document === 'string' ? document : print(document);
+        const documentNode = ensureDocumentNode(document);
         if (!operationName) {
-            const operationAst = getOperationAST(document);
+            const operationAst = getOperationAST(documentNode);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = executionLogger.child(operationName || 'UnnamedOperation');
         contextValue = await mergeContext(contextValue);
         const executionParams = {
-            document,
+            document: documentNode,
             contextValue,
             rootValue,
             variableValues,
@@ -271,42 +272,44 @@ async function getMesh(options) {
         };
         operationLogger.debug(`Execution started with
 ${inspect({
-            ...(operationName ? {} : { query: sdl }),
+            ...(operationName ? {} : { query: printedDocument }),
             ...(rootValue ? { rootValue } : {}),
             ...(variableValues ? { variableValues } : {}),
         })}`);
         const executionResult = await liveQueryStore.execute(executionParams);
         operationLogger.debug(`Execution done with
 ${inspect({
-            ...(operationName ? {} : { query: sdl }),
+            ...(operationName ? {} : { query: printedDocument }),
             ...executionResult,
         })}`);
         return executionResult;
     }
     const subscriberLogger = logger.child(`meshSubscribe`);
-    async function meshSubscribe(documentOrSDL, variables = EMPTY_VARIABLES_VALUE, context = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
+    async function meshSubscribe(document, variableValues = EMPTY_VARIABLES_VALUE, contextValue = EMPTY_CONTEXT_VALUE, rootValue = EMPTY_ROOT_VALUE, operationName) {
         var _a;
-        const { document, sdl } = getDocumentNodeAndSDL(documentOrSDL);
+        const printedDocument = typeof document === 'string' ? document : print(document);
+        const documentNode = ensureDocumentNode(document);
         if (!operationName) {
-            const operationAst = getOperationAST(document);
+            const operationAst = getOperationAST(documentNode);
             operationName = (_a = operationAst.name) === null || _a === void 0 ? void 0 : _a.value;
         }
         const operationLogger = subscriberLogger.child(operationName || 'UnnamedOperation');
+        contextValue = await mergeContext(contextValue);
+        const executionParams = {
+            document: documentNode,
+            contextValue,
+            rootValue,
+            variableValues,
+            schema: unifiedSchema,
+            operationName,
+        };
         operationLogger.debug(`Subscription started with
 ${inspect({
             ...(rootValue ? {} : { rootValue }),
-            ...(variables ? {} : { variables }),
-            ...(operationName ? {} : { query: sdl }),
+            ...(variableValues ? {} : { variableValues }),
+            ...(operationName ? {} : { query: printedDocument }),
         })}`);
-        context = await mergeContext(context);
-        const executionResult = await jitExecutor({
-            document,
-            context,
-            rootValue,
-            variables,
-            operationName,
-            operationType: 'subscription',
-        });
+        const executionResult = await subscribe(executionParams);
         return executionResult;
     }
     class GraphQLMeshSdkError extends AggregateError {
@@ -327,7 +330,7 @@ ${inspect({
             else {
                 logger.error(`GraphQL Mesh SDK failed to execute:
         ${inspect({
-                    query: printWithCache(document),
+                    query: print(document),
                     variables,
                 })}`);
                 throw new GraphQLMeshSdkError(executionResult.errors, document, variables, executionResult.data);
