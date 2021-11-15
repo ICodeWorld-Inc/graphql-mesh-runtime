@@ -64,6 +64,7 @@ class GraphQLHandler {
                 ...this.config,
                 subscriptionsProtocol: this.config.subscriptionsProtocol,
                 headers,
+                requestCredentials: 'omit'
             });
         };
         let schemaHeaders = typeof configHeaders === 'string'
