@@ -1,0 +1,158 @@
+type Query {
+  """
+  Configuration for `mesh start` or `mesh dev` command.
+  Those commands won't be available in programmatic usage.
+  """
+  serve: ServeConfig
+  """
+  SDK Configuration
+  """
+  sdk: SDKConfig
+}
+
+type ServeConfig @md {
+  """
+  Spawn multiple server instances as node clusters (default: `1`)
+  """
+  fork: Fork
+  """
+  TCP Port to listen (default: `3000`)
+  """
+  port: Port
+  """
+  The binding hostname (default: `localhost`)
+  """
+  hostname: String
+  """
+  Configuration for CORS
+  """
+  cors: CorsConfig
+  """
+  Express/Connect compatible handlers and middlewares extend GraphQL Mesh HTTP Server
+  """
+  handlers: [ServeHandler]
+  """
+  Path to your static files you want to be served with GraphQL Mesh HTTP Server
+  """
+  staticFiles: String
+  """
+  Show GraphiQL Playground
+  """
+  playground: Boolean
+  """
+  Controls the maximum request body size. If this is a number, then the value specifies the number of bytes; if it is a string, the value is passed to the bytes library for parsing. Defaults to '100kb'.
+  """
+  maxRequestBodySize: RequestBodySize
+  """
+  Configuration for GraphQL File Upload
+  """
+  upload: UploadOptions
+  """
+  SSL Credentials for HTTPS Server
+  If this is provided, Mesh will be served via HTTPS
+  """
+  sslCredentials: HTTPSConfig
+  """
+  Path to GraphQL Endpoint (default: /graphql)
+  """
+  endpoint: String
+  """
+  Path to the browser that will be used by `mesh serve` to open a playground window in development mode
+  This feature can be disable by passing `false`
+  """
+  browser: Browser
+  """
+  If you want to use a custom GraphQL server, you can pass the path of the code file that exports a custom Mesh Server Handler
+  With a custom server handler, you won't be able to use the features of GraphQL Mesh HTTP Server
+  """
+  customServerHandler: String
+}
+
+union Port = Int | String
+
+union Fork = Int | Boolean
+
+union RequestBodySize = Int | String
+
+union Browser = String | Boolean
+
+type CorsConfig {
+  origin: Any
+  allowedHeaders: [String]
+  exposedHeaders: [String]
+  credentials: Boolean
+  maxAge: Int
+  preflightContinue: Boolean
+  optionsSuccessStatus: Int
+}
+
+union ServeHandler = WebhookHandler | ExpressHandler
+
+type ExpressHandler {
+  """
+  Path that the handler will control
+  """
+  path: String!
+  """
+  Path of the handler's code
+  """
+  handler: String!
+  """
+  HTTP Method that the handler will control
+  """
+  method: ExpressHandlerMethod
+}
+
+enum ExpressHandlerMethod {
+  GET
+  POST
+  DELETE
+  PATCH
+}
+
+type WebhookHandler {
+  """
+  Path that remote API will ping
+  """
+  path: String!
+  """
+  HTTP Method that the handler will control
+  """
+  method: ExpressHandlerMethod
+  """
+  Name of the topic you want to pass incoming payload
+  """
+  pubsubTopic: String!
+  """
+  Part of the object you want to pass (e.g. `data.messages`)
+  """
+  payload: String
+}
+
+type UploadOptions {
+  """
+  Maximum File Size for GraphQL Upload (default: `100000000`)
+  """
+  maxFileSize: Int
+  """
+  Maximum number of files for GraphQL Upload (default: `10`)
+  """
+  maxFiles: Int
+}
+
+type HTTPSConfig {
+  key: String!
+  cert: String!
+}
+
+type SDKConfig @md {
+  """
+  Use this only if you don't want to use `documents` for SDK,
+  and let Mesh generate them for you
+  """
+  generateOperations: GenerateOperationsConfig
+}
+
+type GenerateOperationsConfig {
+  selectionSetDepth: Int
+}

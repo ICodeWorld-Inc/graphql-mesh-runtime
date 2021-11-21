@@ -1,10 +1,19 @@
-import { GetMeshSourceOptions, MeshHandler, MeshSource, YamlConfig } from '@graphql-mesh/types';
-export default class GraphQLHandler implements MeshHandler {
-    private config;
-    private baseDir;
-    private cache;
-    private nonExecutableSchema;
-    private importFn;
-    constructor({ config, baseDir, cache, store, importFn }: GetMeshSourceOptions<YamlConfig.GraphQLHandler>);
-    getMeshSource(): Promise<MeshSource>;
-}
+import { findAndParseConfig } from './config';
+import { generateTsArtifacts } from './commands/ts-artifacts';
+import { serveMesh } from './commands/serve/serve';
+export { generateTsArtifacts, serveMesh, findAndParseConfig };
+export declare function graphqlMesh(): Promise<{
+    [x: string]: unknown;
+    port: number;
+    prod: boolean;
+    validate: boolean;
+    _: (string | number)[];
+    $0: string;
+} | {
+    [x: string]: unknown;
+    port: number;
+    prod: boolean;
+    validate: boolean;
+    _: (string | number)[];
+    $0: string;
+}>;

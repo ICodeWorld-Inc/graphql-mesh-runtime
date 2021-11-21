@@ -1,17 +1,44 @@
 {
-  "name": "@graphql-mesh/graphql",
-  "version": "0.18.16",
+  "name": "@graphql-mesh/cli",
+  "version": "0.41.0",
   "sideEffects": false,
   "peerDependencies": {
     "graphql": "*"
   },
   "dependencies": {
+    "@graphql-codegen/core": "2.1.0",
+    "@graphql-codegen/typescript": "2.2.2",
+    "@graphql-codegen/typescript-generic-sdk": "2.1.4",
+    "@graphql-codegen/typescript-operations": "2.1.6",
+    "@graphql-codegen/typescript-resolvers": "2.3.0",
+    "@graphql-mesh/config": "0.23.8",
+    "@graphql-mesh/runtime": "0.22.0",
     "@graphql-mesh/store": "0.1.16",
-    "@graphql-mesh/types": "0.51.0",
     "@graphql-mesh/utils": "0.17.2",
-    "@graphql-tools/delegate": "8.2.2",
-    "@graphql-tools/url-loader": "7.2.0",
-    "@graphql-tools/wrap": "8.1.1"
+    "@graphql-tools/code-file-loader": "7.2.0",
+    "@graphql-tools/graphql-file-loader": "7.3.0",
+    "@graphql-tools/load": "7.3.2",
+    "@graphql-tools/utils": "8.2.5",
+    "ajv": "8.6.3",
+    "body-parser": "1.19.0",
+    "change-case": "4.1.2",
+    "cookie-parser": "1.4.5",
+    "cors": "2.8.5",
+    "cosmiconfig": "7.0.1",
+    "express": "4.17.1",
+    "graphql-helix": "1.8.1",
+    "graphql-upload": "12.0.0",
+    "graphql-ws": "5.5.0",
+    "js-yaml": "4.1.0",
+    "json-bigint-patch": "0.0.4",
+    "lodash": "4.17.21",
+    "mkdirp": "1.0.4",
+    "open": "7.4.2",
+    "pascal-case": "3.1.2",
+    "rimraf": "3.0.2",
+    "typescript": "4.4.3",
+    "ws": "8.2.3",
+    "yargs": "17.2.1"
   },
   "license": "MIT",
   "main": "index.js",
@@ -29,5 +56,10 @@
       "require": "./*.js",
       "import": "./*.mjs"
     }
+  },
+  "bin": {
+    "mesh": "bin.js",
+    "gql-mesh": "bin.js",
+    "graphql-mesh": "bin.js"
   }
 }

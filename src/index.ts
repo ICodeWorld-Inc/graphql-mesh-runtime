@@ -1,157 +1,280 @@
+import { findAndParseConfig } from './config';
+import { getMesh, GetMeshOptions } from '@graphql-mesh/runtime';
+import { generateTsArtifacts } from './commands/ts-artifacts';
+import { serveMesh, ServeMeshOptions } from './commands/serve/serve';
+import { isAbsolute, resolve, join } from 'path';
+import { existsSync } from 'fs';
+import { FsStoreStorageAdapter, MeshStore } from '@graphql-mesh/store';
+import { printSchemaWithDirectives } from '@graphql-tools/utils';
 import {
-  GetMeshSourceOptions,
-  MeshHandler,
-  MeshSource,
-  ResolverData,
-  YamlConfig,
-  KeyValueCache,
-  ImportFn,
-} from '@graphql-mesh/types';
-import { UrlLoader, SubscriptionProtocol } from '@graphql-tools/url-loader';
-import { GraphQLSchema, buildSchema, DocumentNode, Kind, buildASTSchema } from 'graphql';
-import { introspectSchema } from '@graphql-tools/wrap';
-import {
-  getInterpolatedHeadersFactory,
-  ResolverDataBasedFactory,
-  getHeadersObject,
+  writeFile,
+  pathExists,
+  rmdirs,
+  DefaultLogger,
+  getDefaultSyncImport,
   loadFromModuleExportExpression,
-  getInterpolatedStringFactory,
-  getCachedFetch,
-  readFileOrUrl,
+  parseWithCache,
 } from '@graphql-mesh/utils';
-import { ExecutionRequest } from '@graphql-tools/utils';
-import { PredefinedProxyOptions, StoreProxy } from '@graphql-mesh/store';
-import { env } from 'process';
+import { handleFatalError } from './handleFatalError';
+import { cwd, env } from 'process';
+import yargs from 'yargs';
+import { hideBin } from 'yargs/helpers';
+import { YamlConfig } from '@graphql-mesh/types';
 
-export default class GraphQLHandler implements MeshHandler {
-  private config: YamlConfig.GraphQLHandler;
-  private baseDir: string;
-  private cache: KeyValueCache<any>;
-  private nonExecutableSchema: StoreProxy<GraphQLSchema>;
-  private importFn: ImportFn;
+export { generateTsArtifacts, serveMesh, findAndParseConfig };
 
-  constructor({ config, baseDir, cache, store, importFn }: GetMeshSourceOptions<YamlConfig.GraphQLHandler>) {
-    this.config = config;
-    this.baseDir = baseDir;
-    this.cache = cache;
-    this.nonExecutableSchema = store.proxy('schema.graphql', PredefinedProxyOptions.GraphQLSchemaWithDiffing);
-    this.importFn = importFn;
-  }
+const SERVE_COMMAND_WARNING =
+  '`serve` command has been replaced by `dev` and `start` commands. Check our documentation for new usage';
 
-  async getMeshSource(): Promise<MeshSource> {
-    const { endpoint, schemaHeaders: configHeaders, introspection } = this.config;
-    const customFetch = getCachedFetch(this.cache);
-
-    if (endpoint.endsWith('.js') || endpoint.endsWith('.ts')) {
-      // Loaders logic should be here somehow
-      const schemaOrStringOrDocumentNode = await loadFromModuleExportExpression<GraphQLSchema | string | DocumentNode>(
-        endpoint,
-        { cwd: this.baseDir, defaultExportName: 'default', importFn: this.importFn }
-      );
-      let schema: GraphQLSchema;
-      if (schemaOrStringOrDocumentNode instanceof GraphQLSchema) {
-        schema = schemaOrStringOrDocumentNode;
-      } else if (typeof schemaOrStringOrDocumentNode === 'string') {
-        schema = buildSchema(schemaOrStringOrDocumentNode);
-      } else if (
-        typeof schemaOrStringOrDocumentNode === 'object' &&
-        schemaOrStringOrDocumentNode?.kind === Kind.DOCUMENT
-      ) {
-        schema = buildASTSchema(schemaOrStringOrDocumentNode);
-      } else {
-        throw new Error(
-          `Provided file '${endpoint} exports an unknown type: ${typeof schemaOrStringOrDocumentNode}': expected GraphQLSchema, SDL or DocumentNode.`
-        );
-      }
-      return {
-        schema,
-      };
-    } else if (endpoint.endsWith('.graphql')) {
-      const rawSDL = await readFileOrUrl<string>(endpoint, {
-        cwd: this.baseDir,
-        allowUnknownExtensions: true,
-      });
-      const schema = buildSchema(rawSDL);
-      return {
-        schema,
-      };
-    }
-    const urlLoader = new UrlLoader();
-    const getExecutorForParams = (
-      params: ExecutionRequest,
-      headersFactory: ResolverDataBasedFactory<Headers>,
-      endpointFactory: ResolverDataBasedFactory<string>
-    ) => {
-      const resolverData: ResolverData = {
-        root: {},
-        args: params.variables,
-        context: params.context,
-        env,
-      };
-      const headers = getHeadersObject(headersFactory(resolverData));
-      const endpoint = endpointFactory(resolverData);
-      return urlLoader.getExecutorAsync(endpoint, {
-        customFetch,
-        ...this.config,
-        subscriptionsProtocol: this.config.subscriptionsProtocol as SubscriptionProtocol,
-        headers,
-      });
-    };
-    let schemaHeaders =
-      typeof configHeaders === 'string'
-        ? await loadFromModuleExportExpression(configHeaders, {
-            cwd: this.baseDir,
-            defaultExportName: 'default',
-            importFn: this.importFn,
+export async function graphqlMesh() {
+  let baseDir = cwd();
+  let logger = new DefaultLogger('🕸️');
+  return yargs(hideBin(process.argv))
+    .help()
+    .option('r', {
+      alias: 'require',
+      describe: 'Loads specific require.extensions before running the codegen and reading the configuration',
+      type: 'array' as const,
+      default: [],
+      coerce: (externalModules: string[]) =>
+        Promise.all(
+          externalModules.map(module => {
+            const localModulePath = resolve(baseDir, module);
+            const islocalModule = existsSync(localModulePath);
+            return import(islocalModule ? localModulePath : module);
           })
-        : configHeaders;
-    if (typeof schemaHeaders === 'function') {
-      schemaHeaders = schemaHeaders();
-    }
-    if (schemaHeaders && 'then' in schemaHeaders) {
-      schemaHeaders = await schemaHeaders;
-    }
-    const schemaHeadersFactory = getInterpolatedHeadersFactory(schemaHeaders || {});
-    async function introspectionExecutor(params: ExecutionRequest) {
-      const executor = await getExecutorForParams(params, schemaHeadersFactory, () => endpoint);
-      return executor(params);
-    }
-    const operationHeadersFactory = getInterpolatedHeadersFactory(this.config.operationHeaders);
-    const endpointFactory = getInterpolatedStringFactory(endpoint);
-
-    const nonExecutableSchema = await this.nonExecutableSchema.getWithSet(async () => {
-      const schemaFromIntrospection = await (introspection
-        ? urlLoader
-            .handleSDL(introspection, customFetch, {
-              ...this.config,
-              subscriptionsProtocol: this.config.subscriptionsProtocol as SubscriptionProtocol,
-              headers: schemaHeaders,
-            })
-            .then(({ schema }) => schema)
-        : introspectSchema(introspectionExecutor));
-      return schemaFromIntrospection;
-    });
-    return {
-      schema: nonExecutableSchema,
-      executor: async params => {
-        params = deleteWarp(params);
-        const executor = await getExecutorForParams(params, operationHeadersFactory, endpointFactory);
-        return executor(params);
+        ),
+    })
+    .option('dir', {
+      describe: 'Modified the base directory to use for looking for meshrc config file',
+      type: 'string',
+      default: baseDir,
+      coerce: dir => {
+        if (isAbsolute(dir)) {
+          baseDir = dir;
+        } else {
+          baseDir = resolve(cwd(), dir);
+        }
       },
-      batch: 'batch' in this.config ? this.config.batch : true,
-    };
-  }
-}
+    })
+    .command(
+      'serve',
+      SERVE_COMMAND_WARNING,
+      () => {},
+      () => {
+        logger.error(SERVE_COMMAND_WARNING);
+      }
+    )
+    .command<{ port: number; prod: boolean; validate: boolean }>(
+      'dev',
+      'Serves a GraphQL server with GraphQL interface by building Mesh artifacts on the fly',
+      builder => {
+        builder.option('port', {
+          type: 'number',
+        });
+      },
+      async args => {
+        try {
+          env.NODE_ENV = 'development';
+          const meshConfig = await findAndParseConfig({
+            dir: baseDir,
+          });
+          logger = meshConfig.logger;
+          const serveMeshOptions: ServeMeshOptions = {
+            baseDir,
+            argsPort: args.port,
+            getBuiltMesh: () => getMesh(meshConfig),
+            logger: meshConfig.logger.child('Server'),
+            rawConfig: meshConfig.config,
+            documents: meshConfig.documents,
+          };
+          if (meshConfig.config.serve?.customServerHandler) {
+            const customServerHandler = await loadFromModuleExportExpression<any>(
+              meshConfig.config.serve.customServerHandler,
+              {
+                defaultExportName: 'default',
+                cwd: baseDir,
+                importFn: m => import(m).then(m => m.default || m),
+              }
+            );
+            await customServerHandler(serveMeshOptions);
+          } else {
+            await serveMesh(serveMeshOptions);
+          }
+        } catch (e) {
+          handleFatalError(e, logger);
+        }
+      }
+    )
+    .command<{ port: number; prod: boolean; validate: boolean }>(
+      'start',
+      'Serves a GraphQL server with GraphQL interface based on your generated Mesh artifacts',
+      builder => {
+        builder.option('port', {
+          type: 'number',
+        });
+      },
+      async args => {
+        try {
+          const builtMeshArtifactsPath = join(baseDir, '.mesh');
+          if (!(await pathExists(builtMeshArtifactsPath))) {
+            throw new Error(
+              `Seems like you haven't build Mesh artifacts yet to start production server! You need to build artifacts first with "mesh build" command!`
+            );
+          }
+          env.NODE_ENV = 'production';
+          const mainModule = join(builtMeshArtifactsPath, 'index.js');
+          const builtMeshArtifacts = await import(mainModule).then(m => m.default || m);
+          const getMeshOptions: GetMeshOptions = await builtMeshArtifacts.getMeshOptions();
+          logger = getMeshOptions.logger;
+          const rawConfig: YamlConfig.Config = builtMeshArtifacts.rawConfig;
+          const serveMeshOptions: ServeMeshOptions = {
+            baseDir,
+            argsPort: args.port,
+            getBuiltMesh: () => getMesh(getMeshOptions),
+            logger: getMeshOptions.logger.child('Server'),
+            rawConfig: builtMeshArtifacts.rawConfig,
+            documents: builtMeshArtifacts.documentsInSDL.map((documentSdl: string, i: number) => ({
+              rawSDL: documentSdl,
+              document: parseWithCache(documentSdl),
+              location: `document_${i}.graphql`,
+            })),
+          };
+          if (rawConfig.serve?.customServerHandler) {
+            const customServerHandler = await loadFromModuleExportExpression<any>(rawConfig.serve.customServerHandler, {
+              defaultExportName: 'default',
+              cwd: baseDir,
+              importFn: m => import(m).then(m => m.default || m),
+            });
+            await customServerHandler(serveMeshOptions);
+          } else {
+            await serveMesh(serveMeshOptions);
+          }
+        } catch (e) {
+          handleFatalError(e, logger);
+        }
+      }
+    )
+    .command(
+      'validate',
+      'Validates artifacts',
+      builder => {},
+      async args => {
+        let destroy: VoidFunction;
+        try {
+          if (!(await pathExists(join(baseDir, '.mesh')))) {
+            throw new Error(
+              `You cannot validate artifacts now because you don't have built artifacts yet! You need to build artifacts first with "mesh build" command!`
+            );
+          }
 
-// 兼容the graphql op没有 __typename
-function deleteWarp<T extends Record<string, any>>(params: T) {
-  try {
-    if (params.document.definitions[0].selectionSet.selections[0].name.value === '__typename') {
-      delete params.document.definitions[0].selectionSet.selections[0];
-    }
-    return params;
-  } catch (error) {
-    console.warn(error);
-    return params;
-  }
+          const importFn = (moduleId: string) => import(moduleId).then(m => m.default || m);
+
+          const store = new MeshStore(
+            '.mesh',
+            new FsStoreStorageAdapter({
+              cwd: baseDir,
+              importFn,
+            }),
+            {
+              readonly: false,
+              validate: true,
+            }
+          );
+
+          logger.info(`Reading Mesh configuration`);
+          const meshConfig = await findAndParseConfig({
+            dir: baseDir,
+            store,
+            importFn,
+            ignoreAdditionalResolvers: true,
+          });
+          logger = meshConfig.logger;
+
+          logger.info(`Generating Mesh schema`);
+          const mesh = await getMesh(meshConfig);
+          logger.info(`Artifacts have been validated successfully`);
+          destroy = mesh?.destroy;
+        } catch (e) {
+          handleFatalError(e, logger);
+        }
+        if (destroy) {
+          destroy();
+        }
+      }
+    )
+    .command(
+      'build',
+      'Builds artifacts',
+      builder => {},
+      async args => {
+        try {
+          const rootArtifactsName = '.mesh';
+          const outputDir = join(baseDir, rootArtifactsName);
+
+          logger.info('Cleaning existing artifacts');
+          await rmdirs(outputDir);
+
+          const importedModulesSet = new Set<string>();
+          const importFn = (moduleId: string) =>
+            import(moduleId).then(m => {
+              importedModulesSet.add(moduleId);
+              return m.default || m;
+            });
+
+          const baseDirRequire = getDefaultSyncImport(baseDir);
+          const syncImportFn = (moduleId: string) => {
+            const m = baseDirRequire(moduleId);
+            importedModulesSet.add(moduleId);
+            return m;
+          };
+
+          const store = new MeshStore(
+            rootArtifactsName,
+            new FsStoreStorageAdapter({
+              cwd: baseDir,
+              importFn,
+            }),
+            {
+              readonly: false,
+              validate: false,
+            }
+          );
+
+          logger.info(`Reading Mesh configuration`);
+          const meshConfig = await findAndParseConfig({
+            dir: baseDir,
+            store,
+            importFn,
+            syncImportFn,
+            ignoreAdditionalResolvers: true,
+          });
+          logger = meshConfig.logger;
+
+          logger.info(`Generating Mesh schema`);
+          const { schema, destroy, rawSources } = await getMesh(meshConfig);
+          await writeFile(join(outputDir, 'schema.graphql'), printSchemaWithDirectives(schema));
+
+          logger.info(`Generating artifacts`);
+          await generateTsArtifacts({
+            unifiedSchema: schema,
+            rawSources,
+            mergerType: meshConfig.merger.name,
+            documents: meshConfig.documents,
+            flattenTypes: false,
+            importedModulesSet,
+            baseDir,
+            meshConfigCode: meshConfig.code,
+            logger,
+            sdkConfig: meshConfig.config.sdk,
+          });
+
+          logger.info(`Cleanup`);
+          destroy();
+          logger.info('Done! => ' + outputDir);
+        } catch (e) {
+          handleFatalError(e, logger);
+        }
+      }
+    ).argv;
 }

@@ -1,6 +1,5 @@
+#!/usr/bin/env node
 'use strict';
-
-Object.defineProperty(exports, '__esModule', { value: true });
 
 function _interopDefault (ex) { return (ex && (typeof ex === 'object') && 'default' in ex) ? ex['default'] : ex; }
 
@@ -23,6 +22,7 @@ function _interopNamespace(e) {
 	}
 }
 
+const utils = require('@graphql-mesh/utils');
 const config = require('@graphql-mesh/config');
 const Ajv = _interopDefault(require('ajv'));
 const cosmiconfig = require('cosmiconfig');
@@ -37,7 +37,6 @@ const pascalCase = require('pascal-case');
 const tsOperationsPlugin = require('@graphql-codegen/typescript-operations');
 const tsGenericSdkPlugin = require('@graphql-codegen/typescript-generic-sdk');
 const ts = _interopDefault(require('typescript'));
-const utils = require('@graphql-mesh/utils');
 const fs = require('fs');
 const utils$1 = require('@graphql-tools/utils');
 const express = _interopDefault(require('express'));
@@ -3989,7 +3988,6 @@ async function graphqlMesh() {
     }).argv;
 }
 
-exports.findAndParseConfig = findAndParseConfig;
-exports.generateTsArtifacts = generateTsArtifacts;
-exports.graphqlMesh = graphqlMesh;
-exports.serveMesh = serveMesh;
+graphqlMesh()
+    .then(() => { })
+    .catch(e => handleFatalError(e, new utils.DefaultLogger('🕸️')));
