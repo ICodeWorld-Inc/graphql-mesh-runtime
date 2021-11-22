@@ -110,9 +110,12 @@ class GraphQLHandler {
 }
 // 兼容the graphql op没有 __typename
 function deleteWarp(params) {
+    const selections = params.document.definitions[0].selectionSet.selections;
     try {
-        if (params.document.definitions[0].selectionSet.selections[0].name.value === '__typename') {
-            delete params.document.definitions[0].selectionSet.selections[0];
+        for (let i = 0; i < selections.length; i++) {
+            if (params.document.definitions[0].selectionSet.selections[i].name.value.indexOf('__typename') > -1) {
+                delete params.document.definitions[0].selectionSet.selections[i];
+            }
         }
         return params;
     }
