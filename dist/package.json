@@ -1,0 +1,37 @@
+{
+  "name": "@graphql-mesh/runtime",
+  "version": "0.22.0",
+  "sideEffects": false,
+  "peerDependencies": {
+    "graphql": "*"
+  },
+  "dependencies": {
+    "@graphql-mesh/types": "0.51.0",
+    "@graphql-mesh/utils": "0.17.2",
+    "@graphql-tools/batch-delegate": "8.1.0",
+    "@graphql-tools/delegate": "8.2.2",
+    "@graphql-tools/resolvers-composition": "6.4.0",
+    "@graphql-tools/schema": "8.2.0",
+    "@graphql-tools/utils": "8.2.5",
+    "@graphql-tools/wrap": "8.1.1",
+    "@n1ru4l/graphql-live-query": "0.8.1",
+    "@n1ru4l/in-memory-live-query-store": "0.7.2"
+  },
+  "license": "MIT",
+  "main": "index.js",
+  "module": "index.mjs",
+  "typings": "index.d.ts",
+  "typescript": {
+    "definition": "index.d.ts"
+  },
+  "exports": {
+    ".": {
+      "require": "./index.js",
+      "import": "./index.mjs"
+    },
+    "./*": {
+      "require": "./*.js",
+      "import": "./*.mjs"
+    }
+  }
+}
